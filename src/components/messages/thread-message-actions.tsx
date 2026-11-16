@@ -1,12 +1,15 @@
 "use client";
 
-import { createElement, useEffect, useState } from "react";
-import { Ban, FileCode2, Forward, Mail, MailOpen, MoreVertical, Reply, ReplyAll, Star } from "lucide-react";
+import { createElement, useState } from "react";
+import { Ban, FileCode2, Forward, Info, Mail, MailOpen, MoreVertical, Note, Reply, ReplyAll, Star } from "@/components/icons";
 import { useCompose } from "@/components/compose/compose-context";
 import { MessageSourceDialog } from "@/components/messages/message-source-dialog";
+import { MessageActionMenu, MessageActionMenuItem, MessageActionMenuSeparator } from "@/components/message-actions/action-menu";
 import { getOwnAddressForMessage } from "@/app/(dashboard)/inbox/[messageId]/utils";
+import { useLanguage } from "@/components/language-provider";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import {
 	blockMessageContact,
 	createForwardDraft,
@@ -18,6 +21,7 @@ import {
 	runSingleMessageAction,
 } from "@/components/message-actions/utils";
 import { toggleMessageStar } from "./message-list-row-actions-utils";
+import { useConversationNotes } from "./conversation-notes-context";
 import type { ThreadMessageActionsProps } from "./thread-message-actions-types";
 import type { ReplyMode } from "@/components/message-actions/types";
 
@@ -27,10 +31,14 @@ export function ThreadMessageActions({
 	ownAddress,
 	ownAddresses = [],
 	starOnly = false,
+	detailsOpen = false,
+	onToggleDetails,
 }: ThreadMessageActionsProps) {
+	const { t } = useLanguage();
 	const { openDraftComposer } = useCompose();
+	const notes = useConversationNotes();
+	const noteCount = notes?.notes.filter((note) => note.messageId === message.id).length ?? 0;
 	const [starred, setStarred] = useState(message.starred);
-	const [moreOpen, setMoreOpen] = useState(false);
 	const [sourceOpen, setSourceOpen] = useState(false);
 	const [pending, setPending] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -40,25 +48,25 @@ export function ThreadMessageActions({
 		? getOwnAddressForMessage(message, ownAddresses)
 		: ownAddress;
 
-	useEffect(() => setStarred(message.starred), [message.starred]);
-	useEffect(() => {
-		if (starOnly) setMoreOpen(false);
-	}, [starOnly]);
+	const [prevStarred, setPrevStarred] = useState(message.starred);
+	if (message.starred !== prevStarred) {
+		setPrevStarred(message.starred);
+		setStarred(message.starred);
+	}
 
 	async function onToggleStar() {
 		setPending(true);
 		setError(null);
 		try {
-			setStarred(await toggleMessageStar(message.id));
+			setStarred((await toggleMessageStar(message.id)).starred);
 		} catch (nextError) {
-			setError(nextError instanceof Error ? nextError.message : "Unable to update star");
+			setError(nextError instanceof Error ? nextError.message : t("message.error.star"));
 		} finally {
 			setPending(false);
 		}
 	}
 
 	async function onReply(mode: ReplyMode) {
-		setMoreOpen(false);
 		setPending(true);
 		setError(null);
 		try {
@@ -75,14 +83,13 @@ export function ThreadMessageActions({
 			});
 			openDraftComposer(draftId);
 		} catch (nextError) {
-			setError(nextError instanceof Error ? nextError.message : "Could not start reply");
+			setError(nextError instanceof Error ? nextError.message : t("message.error.reply"));
 		} finally {
 			setPending(false);
 		}
 	}
 
 	async function onForward() {
-		setMoreOpen(false);
 		setPending(true);
 		setError(null);
 		try {
@@ -95,20 +102,19 @@ export function ThreadMessageActions({
 			});
 			openDraftComposer(draftId);
 		} catch (nextError) {
-			setError(nextError instanceof Error ? nextError.message : "Could not start forward");
+			setError(nextError instanceof Error ? nextError.message : t("message.error.forward"));
 		} finally {
 			setPending(false);
 		}
 	}
 
 	async function onMessageAction(action: Parameters<typeof runSingleMessageAction>[1]) {
-		setMoreOpen(false);
 		setPending(true);
 		setError(null);
 		try {
 			await runSingleMessageAction(message.id, action);
 		} catch (nextError) {
-			setError(nextError instanceof Error ? nextError.message : "Could not update message");
+			setError(nextError instanceof Error ? nextError.message : t("message.error.update"));
 		} finally {
 			setPending(false);
 		}
@@ -116,14 +122,13 @@ export function ThreadMessageActions({
 
 	async function onBlock() {
 		if (!mailboxId) return;
-		setMoreOpen(false);
 		setPending(true);
 		setError(null);
 		try {
 			await blockMessageContact({ mailboxId, senderAddress: message.fromAddr });
 			await runSingleMessageAction(message.id, "trash");
 		} catch (nextError) {
-			setError(nextError instanceof Error ? nextError.message : "Could not block contact");
+			setError(nextError instanceof Error ? nextError.message : t("message.error.block"));
 		} finally {
 			setPending(false);
 		}
@@ -131,14 +136,44 @@ export function ThreadMessageActions({
 
 	return (
 		<div className="flex items-center gap-0.5">
-			{error && <span className="mr-1 max-w-32 truncate text-xs text-red-600" title={error}>{error}</span>}
-			<Tooltip label={starred ? "Remove star" : "Star"}>
+			{error && <span role="alert" className="mr-1 max-w-32 truncate text-xs text-red-600" title={error}>{error}</span>}
+			{onToggleDetails && (
+				<Tooltip label={t("message.details")}>
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						className={cn("h-8 w-8 px-0", detailsOpen && "bg-neutral-100 text-neutral-900")}
+						aria-label={t("message.details")}
+						aria-expanded={detailsOpen}
+						onClick={onToggleDetails}
+					>
+						<Info className="h-4 w-4" />
+					</Button>
+				</Tooltip>
+			)}
+			{notes && noteCount > 0 && (
+				<Tooltip label={t("note.count", { count: noteCount })}>
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						className="h-8 gap-1 px-2 text-xs text-neutral-600"
+						aria-label={t("note.count", { count: noteCount })}
+						onClick={() => notes.setOpen(true)}
+					>
+						<Note className="h-4 w-4" />
+						{noteCount}
+					</Button>
+				</Tooltip>
+			)}
+			<Tooltip label={starred ? t("message.removeStar") : t("message.star")}>
 				<Button
 					type="button"
 					variant="ghost"
 					size="sm"
 					className="h-8 w-8 px-0"
-					aria-label={starred ? "Remove star" : "Star"}
+					aria-label={starred ? t("message.removeStar") : t("message.star")}
 					aria-pressed={starred}
 					disabled={pending}
 					onClick={() => void onToggleStar()}
@@ -148,72 +183,79 @@ export function ThreadMessageActions({
 			</Tooltip>
 			{!starOnly && (
 				<>
-			<Tooltip label="Reply">
-				<Button
-					type="button"
-					variant="ghost"
-					size="sm"
-					className="h-8 w-8 px-0"
-					aria-label="Reply"
-					disabled={pending}
-					onClick={() => void onReply("reply")}
-				>
-					<Reply className="h-4 w-4" />
-				</Button>
-			</Tooltip>
-			<div className="relative">
-				<Tooltip label="More actions">
-					<Button
-						type="button"
-						variant="ghost"
-						size="sm"
-						className="h-8 w-8 px-0"
-						aria-label="More actions"
-						aria-expanded={moreOpen}
-						disabled={pending}
-						onClick={() => setMoreOpen((open) => !open)}
+					<Tooltip label={t("message.reply")}>
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							className="h-8 w-8 px-0"
+							aria-label={t("message.reply")}
+							disabled={pending}
+							onClick={() => void onReply("reply")}
+						>
+							<Reply className="h-4 w-4" />
+						</Button>
+					</Tooltip>
+					<MessageActionMenu
+						label={t("common.moreActions")}
+						trigger={
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								className="h-8 w-8 px-0"
+								aria-label={t("common.moreActions")}
+								disabled={pending}
+							>
+								<MoreVertical className="h-4 w-4" />
+							</Button>
+						}
 					>
-						<MoreVertical className="h-4 w-4" />
-					</Button>
-				</Tooltip>
-				{moreOpen && (
-					<div className="absolute right-0 z-30 mt-1 w-56 rounded-xl border border-neutral-200 bg-white p-2 text-neutral-700 shadow-lg">
-						<button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-neutral-100" onClick={() => void onReply("reply")}>
-							<Reply className="h-4 w-4" /> Reply
-						</button>
+						<MessageActionMenuItem icon={<Reply className="h-4 w-4" />} onSelect={() => void onReply("reply")}>
+							{t("message.reply")}
+						</MessageActionMenuItem>
 						{canReplyAll && (
-							<button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-neutral-100" onClick={() => void onReply("replyAll")}>
-								<ReplyAll className="h-4 w-4" /> Reply all
-							</button>
+							<MessageActionMenuItem icon={<ReplyAll className="h-4 w-4" />} onSelect={() => void onReply("replyAll")}>
+								{t("message.replyAll")}
+							</MessageActionMenuItem>
 						)}
-						<button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-neutral-100" onClick={() => void onForward()}>
-							<Forward className="h-4 w-4" /> Forward
-						</button>
-						<button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-neutral-100" onClick={() => { setMoreOpen(false); setSourceOpen(true); }}>
-							<FileCode2 className="h-4 w-4" /> Show original
-						</button>
-						<hr className="my-1 border-neutral-100" />
-						<button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-neutral-100" onClick={() => void onMessageAction(message.read ? "unread" : "read")}>
-							{message.read ? <Mail className="h-4 w-4" /> : <MailOpen className="h-4 w-4" />}
-							{message.read ? "Mark as unread" : "Mark as read"}
-						</button>
+						<MessageActionMenuItem icon={<Forward className="h-4 w-4" />} onSelect={() => void onForward()}>
+							{t("message.forward")}
+						</MessageActionMenuItem>
+						<MessageActionMenuItem icon={<FileCode2 className="h-4 w-4" />} onSelect={() => setSourceOpen(true)}>
+							{t("message.showOriginal")}
+						</MessageActionMenuItem>
+						{notes && (
+							<MessageActionMenuItem icon={<Note className="h-4 w-4" />} onSelect={() => notes.startNote(message.id)}>
+								{t("note.add")}
+							</MessageActionMenuItem>
+						)}
+						<MessageActionMenuSeparator />
+						<MessageActionMenuItem
+							icon={message.read ? <Mail className="h-4 w-4" /> : <MailOpen className="h-4 w-4" />}
+							onSelect={() => void onMessageAction(message.read ? "unread" : "read")}
+						>
+							{message.read ? t("common.markUnread") : t("common.markRead")}
+						</MessageActionMenuItem>
 						{moveActions.map((item) => (
-							<button key={item.action} type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-neutral-100" onClick={() => void onMessageAction(item.action)}>
-								{createElement(item.icon, { size: 16 })} {item.label}
-							</button>
+							<MessageActionMenuItem
+								key={item.action}
+								icon={createElement(item.icon, { size: 16 })}
+								onSelect={() => void onMessageAction(item.action)}
+							>
+								{t(item.labelKey)}
+							</MessageActionMenuItem>
 						))}
 						{message.direction === "inbound" && mailboxId && (
 							<>
-								<hr className="my-1 border-neutral-100" />
-								<button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-neutral-100" onClick={() => void onBlock()}>
-									<Ban className="h-4 w-4" /> Block contact
-								</button>
+								<MessageActionMenuSeparator />
+								<MessageActionMenuItem icon={<Ban className="h-4 w-4" />} onSelect={() => void onBlock()}>
+									{t("message.blockContact")}
+								</MessageActionMenuItem>
 							</>
 						)}
-					</div>
-				)}
-			</div>
-			<MessageSourceDialog messageId={message.id} open={sourceOpen} onOpenChange={setSourceOpen} />
+					</MessageActionMenu>
+					<MessageSourceDialog messageId={message.id} open={sourceOpen} onOpenChange={setSourceOpen} />
 				</>
 			)}
 		</div>

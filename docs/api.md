@@ -85,21 +85,25 @@ On a Team license an administrator can add other users as hosts of a booking eve
 
 ## Account and mailbox management
 
-Admin > API keys can also grant the `accounts` and `mailboxes` scopes independently. These routes use `Authorization: Bearer <key>` and require the key owner to retain the admin role. Account management requires a Team license; creating a shared mailbox also requires a Team license. Each key can access only accounts created by its owner and mailboxes owned by those accounts or the admin.
+Admin > API keys can also grant the `accounts`, `mailboxes` and `storage` scopes independently. These routes use `Authorization: Bearer <key>` and require the key owner to retain the admin role. Account management requires a Team license; creating a shared mailbox also requires a Team license. Each key can access only accounts created by its owner and mailboxes owned by those accounts or the admin.
 
-Admin API keys cannot read or send mail. Enable **Allow MCP access** when creating an admin key to use its selected `domains`, `accounts`, and `mailboxes` permissions through `/mcp`. The `manage_domains`, `manage_accounts`, and `manage_mailboxes` tools expose the corresponding management actions below. Admin MCP keys do not expose mail tools. Use Settings > API keys for mail and mail MCP access.
+The `storage` scope reports and tests object storage: `GET /api/v1/storage` returns `{ storage: { provider: "backblaze" | "s3" | "r2" | "files", configured, bucket, endpoint }, warning }` (credentials are never returned; `warning` explains a half-set `B2_*` configuration), and `POST /api/v1/storage` round-trips a small object and returns `{ ok, error?, latencyMs, storage }` (HTTP 502 on failure). Backblaze B2 (`B2_KEY_ID`, `B2_APPLICATION_KEY`, `B2_BUCKET`, `B2_ENDPOINT`) or AWS S3 (`S3_BUCKET`, `S3_REGION`, credentials) replaces R2 for all stored objects when configured.
+
+Admin API keys cannot read or send mail. Enable **Allow MCP access** when creating an admin key to use its selected `domains`, `accounts`, `mailboxes`, and `storage` permissions through `/mcp`. The `manage_domains`, `manage_accounts`, `manage_mailboxes`, and `manage_storage` (`status`, `test`) tools expose the corresponding management actions below. Admin MCP keys do not expose mail tools. Use Settings > API keys for mail and mail MCP access.
 
 | Scope | Mailflare route | Purpose |
 | --- | --- | --- |
 | `accounts` | `GET /api/v1/accounts` | List managed accounts |
 | `accounts` | `POST /api/v1/accounts` | Create an account and its mailbox (`{ username, domainId, password, role?, useAllDomains?, aliases? }`) |
 | `accounts` | `GET /api/v1/accounts/[id]` | Get a managed account |
-| `accounts` | `PATCH /api/v1/accounts/[id]` | Update an account (`{ name, role, disabled, canManageMailboxes, forwardingEmail?, password? }`) |
+| `accounts` | `PATCH /api/v1/accounts/[id]` | Update an account (`{ name, role, disabled, canManageMailboxes, calendarEnabled?, driveEnabled?, forwardingEmail?, password? }`) |
 | `mailboxes` | `GET /api/v1/mailboxes` | List managed mailboxes |
 | `mailboxes` | `POST /api/v1/mailboxes` | Create a mailbox (`{ domainId, localPart, displayName?, type?, ownerUserId? }`) |
 | `mailboxes` | `GET /api/v1/mailboxes/[id]` | Get a managed mailbox |
 | `mailboxes` | `PATCH /api/v1/mailboxes/[id]` | Update mailbox settings |
 | `mailboxes` | `DELETE /api/v1/mailboxes/[id]` | Delete a mailbox and its routing rule |
+| `storage` | `GET /api/v1/storage` | Active object storage (R2, Backblaze B2, AWS S3 or local files) |
+| `storage` | `POST /api/v1/storage` | Write, read and delete a test object to verify storage |
 
 ### Choose aliases when creating an account
 
@@ -178,6 +182,10 @@ To send a reply that threads correctly in the recipient's client, pass the paren
 
 `GET /api/messages/{id}/thread` (session auth) returns every stored message in the same conversation, oldest first, excluding drafts and trash. `GET /api/messages?group=thread` collapses a list to one row per conversation (its newest message matching the filter) and adds `threadCount`, `threadUnread` and `threadMessageIds`, the ids that row stands for within the current filter, so bulk actions can act on the whole conversation.
 
+`POST /api/messages/bulk` (session auth) with `action: "delete"` permanently removes the given messages, including their raw MIME and attachment objects, but only those already in Trash or Spam; others are skipped and counted in `skipped`. `POST /api/messages/empty` with `{ mailboxId, folder: "trash" | "spam" }` permanently deletes that folder's messages in batches of 100 and returns `{ deleted, remaining }`; call it again until `remaining` is 0. Both write an `email.delete` audit entry per message with `permanent: true`.
+
+Each user can also choose **Settings > Inbox > Trash and Spam clean-up** to delete Trash and Spam automatically after a number of days (`GET`/`PATCH /api/settings/trash-retention` with `{ days: number | null }`, 1 to 365, `null` for never). It applies to messages in mailboxes the user owns. `messages.trashed_at` records when a message entered either folder; database triggers keep it current, and the scheduled maintenance run deletes expired messages in batches of 200, with `source: "retention"` in the audit entry.
+
 Messages composed in Mailflare are sent as HTML with a plain-text alternative derived from it. Quoted or forwarded content is wrapped in `<div class="mailflare-quote" data-mailflare-quote="1">` so the reader can fold it. `POST /api/drafts` accepts `forwardOfMessageId`, which copies that message's attachments onto the new draft; `DELETE /api/drafts/{id}/attachments/{attachmentId}` removes one, and `POST /api/send` with `draftId` sends the draft's stored files along with any uploaded in the request.
 
 The dashboard composer accepts up to 10 attachments. An administrator sets the outgoing per-file and combined limit from 1 to 25 MB on **General** (`/general`); the default is 25 MB. Attachment metadata is stored in D1 and file content is stored in R2. Normal message downloads require access to the mailbox containing the message.
@@ -194,11 +202,23 @@ The account id is the user id. Each Mailflare mailbox appears as a top-level JMA
 
 `Email/query` supports the `header` filter: `["Message-ID", "<id@example.com>"]` matches messages with that value, and `["Message-ID"]` matches any message that has the header. `Message-ID`, `In-Reply-To` and `References` are answered from stored columns; Message-IDs compare with or without angle brackets, and header names are case-insensitive. Any other header name returns an `unsupportedFilter` error rather than silently matching everything.
 
-## Password reset and two-factor authentication
+## Password reset, passkeys and two-factor authentication
 
-`POST /api/auth/password-reset/request` with `{ email }` always answers `200 { ok: true }`; when the account exists and has a recovery email, a single-use link valid for 30 minutes is mailed there. `POST /api/auth/password-reset/confirm` with `{ token, password }` sets the password and signs the account out everywhere.
+`POST /api/auth/password-reset/request` with `{ email }` always answers `200 { ok: true }`; when the account exists, has a password and has a recovery email, a single-use link valid for 30 minutes is mailed there. A passkey-only account never regains a password through email. `POST /api/auth/password-reset/confirm` with `{ token, password }` sets the password and signs the account out everywhere.
 
-When two-factor authentication is on, `POST /api/auth/login` returns `{ ok: true, mfaRequired: true, challengeToken }` instead of a session. `POST /api/auth/mfa/verify` with `{ challengeToken, code }` completes the sign-in; `code` is a 6-digit TOTP or one of the recovery codes. Challenges expire after 5 minutes. Enrolment, recovery codes and turning it off are under `/api/settings/mfa/*` (session auth) and always re-check the password.
+Passkeys are discoverable WebAuthn credentials. `POST /api/auth/passkey/options` starts a passwordless sign-in and `POST /api/auth/passkey/verify` completes it. Adding a passkey requires a step-up grant and is available under `/api/settings/passkeys/*`. `POST /api/settings/passkeys/check/options` starts a check of an enrolled passkey for the signed-in account, and `POST /api/settings/passkeys/check/verify` returns `{ ok: true, passkeyId }` for the credential the browser presented; a check records last use but grants no security change.
+
+When a second step is required after a password sign-in, `POST /api/auth/login` returns `{ ok: true, mfaRequired: true, challengeToken, methods }` instead of a session. `methods` names the available passkey, authenticator (`totp`) and authenticator-recovery (`recovery`) options. Finish with a passkey through `/api/auth/passkey/mfa/options` and `/api/auth/passkey/mfa/verify`, or with a code through `POST /api/auth/mfa/verify`. Challenges expire after 5 minutes.
+
+Passkeys satisfy the second step by themselves. Authentication recovery codes belong to the authenticator-app flow; they cannot replace passkeys. When every passkey is lost, an administrator can issue a one-time passkey enrolment link from the account page. For a sole administrator, run `npm run auth:recovery-link -- admin@example.com https://mail.example.com` on the server and send the printed 30-minute link through a trusted channel. With `DATABASE_URL` set it writes the grant directly; without it, the command prints the `wrangler d1 execute DB --remote …` statements to run against the default D1 database.
+
+Sensitive changes (`passkey.add`, `passkey.remove`, `password.set`, `password.remove`, `mfa.enroll`, `mfa.disable`, `mfa.codes`, `second_factor.toggle`, and the administrator actions) require fresh identity verification. The web client obtains a short-lived step-up grant from `POST /api/auth/step-up` (password plus code where required) or `/api/auth/step-up/options` + `/api/auth/step-up/verify` (passkey). Grants are single-use, bound to the session, action, actor and target account, and become invalid when either account's security configuration changes. The authenticator-management and administrator recovery-link endpoints also accept direct password verification, with an authenticator code or recovery code when required.
+
+Turning the authenticator app off (`POST /api/settings/mfa/disable`) leaves the second-step requirement as the account had it: a passkey can take over as the second step, but an account that never required one does not start requiring it. Removing the password (`DELETE /api/settings/password`) and removing the authenticator app are separate changes, so a client that moves an account to passkey-only confirms each one on its own.
+
+Adding a password to a passkey-only account (`POST /api/settings/password`) accepts `{ newPassword, stepUpToken, requireSecondFactor? }`. A single `password.set` grant authorizes saving the password and its selected second-step policy together; omitting `requireSecondFactor` preserves the current policy. The web client asks for this choice after verification but before saving. Choosing to keep only passkeys saves nothing.
+
+Removing the last passkey (`DELETE /api/settings/passkeys/:id`) is allowed when a password remains. If no authenticator app is enabled, the removal atomically turns off the second-step requirement; the web confirmation warns about this change. An enabled authenticator keeps the requirement unchanged. Passkey-only accounts cannot remove their last passkey (`last_method`).
 
 ## Searching
 

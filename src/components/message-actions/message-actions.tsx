@@ -1,17 +1,27 @@
 "use client";
 
-import { createElement, useState, useMemo, useCallback } from "react";
+import { createElement, Fragment, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { confirmDestructive } from "@/components/ui/confirm-dialog";
+import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { Archive, Ban, BellOff, Clock, FileCode2, Forward, Mail, MailOpen, MoreVertical, Reply, ReplyAll, ShieldAlert, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, Ban, BellOff, Clock, FileCode2, Forward, Mail, MailOpen, MoreVertical, Note, Reply, ReplyAll, ShieldAlert, ShieldCheck, Trash2 } from "@/components/icons";
+import { useLanguage } from "@/components/language-provider";
 import { useCompose } from "@/components/compose/compose-context";
 import { MessageSourceDialog } from "@/components/messages/message-source-dialog";
+import { useMessageListVisibility } from "@/components/messages/message-list-visibility";
+import { useAutoAdvance } from "@/components/messages/message-detail-navigation";
+import { useConversationNotes } from "@/components/messages/conversation-notes-context";
 import { MessageSnoozeDialog } from "./message-snooze-dialog";
-import { useIsMobile } from "@/components/sidebar-mobile-utils";
+import { requestUnsubscribe } from "@/components/messages/unsubscribe-button-utils";
+import { MessageActionMenu, MessageActionMenuItem, MessageActionMenuLabel, MessageActionMenuSeparator } from "./action-menu";
+import { getVisibleActionCount } from "./action-overflow-utils";
 import { useHotkeys, useShortcuts } from "@/components/shortcuts";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import type { BulkMessageAction } from "@/app/api/messages/bulk/types";
 import type { MessageActionsProps, ReplyMode } from "./types";
+import { getPermanentDeleteConfirmText, PartialDeleteError, supportsPermanentDelete } from "@/lib/messages/permanent-delete-utils";
 import {
 	confirmTrashWithoutUnsubscribe,
 	blockMessageContact,
@@ -19,6 +29,7 @@ import {
 	createReplyDraft,
 	createTrashSenderRule,
 	getMessageActionRedirect,
+	getMessageBackHref,
 	getMoveMessageActions,
 	getReplyRecipients,
 	getReplyThreading,
@@ -43,45 +54,69 @@ export function MessageActions({
 	messageMeta,
 	bodyHtml,
 }: MessageActionsProps) {
+	const { t } = useLanguage();
 	const router = useRouter();
-	const isMobile = useIsMobile();
-	const { openDraftComposer } = useCompose();
+	const { openDraftComposer, showNotice } = useCompose();
+	const { backHref: listHref } = useMessageListVisibility();
 	const { shortcutsEnabled } = useShortcuts();
+	const autoAdvance = useAutoAdvance(messageId);
+	const notes = useConversationNotes();
 	const [pendingAction, setPendingAction] = useState<
 		BulkMessageAction | "unsubscribe" | ReplyMode | "forward" | "block" | null
 	>(null);
 	const [error, setError] = useState<string | null>(null);
-	const [moreOpen, setMoreOpen] = useState(false);
+	const [visibleCount, setVisibleCount] = useState(0);
+	const actionsRef = useRef<HTMLDivElement>(null);
 	const [sourceOpen, setSourceOpen] = useState(false);
 	const [snoozeOpen, setSnoozeOpen] = useState(false);
 
 	const runAction = useCallback(async (action: BulkMessageAction) => {
-		setMoreOpen(false);
 		setPendingAction(action);
 		setError(null);
 		try {
 			await runSingleMessageAction(messageId, action);
-			const redirect = getMessageActionRedirect(action, direction);
-			if (redirect) router.push(redirect);
+			const redirect = getMessageActionRedirect(action, listHref);
+			if (redirect) router.push(autoAdvance() ?? redirect);
 			router.refresh();
 		} catch {
-			setError("Could not update message");
+			setError(t("actions.error.update"));
 		} finally {
 			setPendingAction(null);
 		}
-	}, [messageId, direction, router]);
+	}, [messageId, listHref, router, t, autoAdvance]);
+
+	// In Trash and Spam the delete button removes the message for good instead of
+	// being a no-op, after the user confirms.
+	const canDeleteForever = supportsPermanentDelete(status);
+	const deleteForever = useCallback(async () => {
+		if (!await confirmDestructive(getPermanentDeleteConfirmText(1, t))) return;
+		setPendingAction("delete");
+		setError(null);
+		try {
+			await runSingleMessageAction(messageId, "delete");
+			router.push(autoAdvance() ?? getMessageBackHref(direction, status));
+			router.refresh();
+		} catch (deleteError) {
+			setError(deleteError instanceof PartialDeleteError ? t("actions.error.deleteSkipped") : t("actions.error.delete"));
+			setPendingAction(null);
+		}
+	}, [messageId, direction, status, router, t, autoAdvance]);
+	const onTrashClick = () => (canDeleteForever ? void deleteForever() : void runAction("trash"));
+	const trashLabel = canDeleteForever ? t("common.deleteForever") : t("actions.moveToTrash");
 
 	const replyable = useMemo(() => message ?? {
 		direction,
 		fromAddr: senderAddress,
 		toAddr: "",
 		ccAddr: null,
+		replyTo: null,
 		providerMessageId: null,
 		references: null,
 		threadId: null,
 	}, [message, direction, senderAddress]);
 	const canReplyAll = hasAdditionalRecipients(replyable, ownAddresses);
 
+	const sentAt = messageMeta?.createdAt;
 	const handleReply = useCallback(async (mode: ReplyMode) => {
 		setPendingAction(mode);
 		setError(null);
@@ -93,23 +128,23 @@ export function MessageActions({
 				subject,
 				bodyText,
 				bodyHtml,
-				sentAt: messageMeta?.createdAt,
+				sentAt,
 				recipients: getReplyRecipients(replyable, ownAddresses, mode),
 				threading: getReplyThreading(replyable),
 			});
 			openDraftComposer(draftId);
 		} catch (replyError) {
-			setError(replyError instanceof Error ? replyError.message : "Could not start reply");
+			setError(replyError instanceof Error ? replyError.message : t("message.error.reply"));
 		} finally {
 			setPendingAction(null);
 		}
-	}, [mailboxId, senderAddress, ownAddress, subject, bodyText, bodyHtml, messageMeta?.createdAt, replyable, ownAddresses, openDraftComposer]);
+	}, [mailboxId, senderAddress, ownAddress, subject, bodyText, bodyHtml, sentAt, replyable, ownAddresses, openDraftComposer, t]);
 
 	const shortcuts = useMemo(
 		() => [
 			{
 				key: "e",
-				label: "Archive Message",
+				label: t("shortcut.archiveMessage"),
 				category: "Actions" as const,
 				action: () => {
 					if (status !== "archived") void runAction("archive");
@@ -117,7 +152,7 @@ export function MessageActions({
 			},
 			{
 				key: "y",
-				label: "Archive Message",
+				label: t("shortcut.archiveMessage"),
 				category: "Actions" as const,
 				action: () => {
 					if (status !== "archived") void runAction("archive");
@@ -125,7 +160,7 @@ export function MessageActions({
 			},
 			{
 				key: "#",
-				label: "Move to Trash",
+				label: t("shortcut.moveToTrash"),
 				category: "Actions" as const,
 				action: () => {
 					if (status !== "trash") void runAction("trash");
@@ -133,13 +168,13 @@ export function MessageActions({
 			},
 			{
 				key: "r",
-				label: "Reply to Message",
+				label: t("shortcut.replyToMessage"),
 				category: "Composing" as const,
 				action: () => void handleReply("reply"),
 			},
 			{
 				key: "!",
-				label: "Report Spam",
+				label: t("shortcut.reportSpam"),
 				category: "Actions" as const,
 				action: () => {
 					if (status !== "spam" && direction === "inbound") void runAction("spam");
@@ -147,28 +182,42 @@ export function MessageActions({
 			},
 			{
 				key: "u",
-				label: "Back to List",
+				label: t("shortcut.backToList"),
 				category: "Navigation" as const,
 				action: () => router.back(),
 			},
 		],
-		[status, direction, runAction, handleReply, router]
+		[status, direction, runAction, handleReply, router, t]
 	);
 
 	useHotkeys(shortcuts, { enabled: shortcutsEnabled });
 
 	async function onUnsubscribe() {
-		setMoreOpen(false);
 		setError(null);
 		if (unsubscribeUrl) {
-			openUnsubscribeUrl(unsubscribeUrl);
+			setPendingAction("unsubscribe");
+			try {
+				const result = await requestUnsubscribe(messageId);
+				if (result.method === "link") {
+					openUnsubscribeUrl(result.url);
+					showNotice(t("actions.unsubscribeLinkOpened"));
+				} else if (result.method === "mailto") {
+					showNotice(t("actions.unsubscribeEmailSent"));
+				} else {
+					showNotice(t("actions.unsubscribed"));
+				}
+			} catch {
+				openUnsubscribeUrl(unsubscribeUrl);
+			} finally {
+				setPendingAction(null);
+			}
 			return;
 		}
 
-		if (!confirmTrashWithoutUnsubscribe()) return;
+		if (!await confirmTrashWithoutUnsubscribe()) return;
 		setPendingAction("unsubscribe");
 		if (!mailboxId) {
-			setError("Could not create trash rule");
+			setError(t("actions.error.trashRule"));
 			setPendingAction(null);
 			return;
 		}
@@ -177,7 +226,7 @@ export function MessageActions({
 			await createTrashSenderRule({ mailboxId, senderAddress });
 			await runAction("trash");
 		} catch {
-			setError("Could not create trash rule");
+			setError(t("actions.error.trashRule"));
 			setPendingAction(null);
 		}
 	}
@@ -196,16 +245,15 @@ export function MessageActions({
 			});
 			openDraftComposer(draftId);
 		} catch (forwardError) {
-			setError(forwardError instanceof Error ? forwardError.message : "Could not start forward");
+			setError(forwardError instanceof Error ? forwardError.message : t("message.error.forward"));
 		} finally {
 			setPendingAction(null);
 		}
 	}
 	async function onBlockContact() {
-		setMoreOpen(false);
 		setError(null);
 		if (!mailboxId) {
-			setError("Could not block contact");
+			setError(t("message.error.block"));
 			return;
 		}
 
@@ -213,10 +261,28 @@ export function MessageActions({
 		try {
 			await blockMessageContact({ mailboxId, senderAddress });
 			await runSingleMessageAction(messageId, "trash");
-			router.push("/trash");
+			router.push(autoAdvance() ?? listHref);
 			router.refresh();
 		} catch (blockError) {
-			setError(blockError instanceof Error ? blockError.message : "Could not block contact");
+			setError(blockError instanceof Error ? blockError.message : t("message.error.block"));
+		} finally {
+			setPendingAction(null);
+		}
+	}
+
+	async function onUnsubscribeDeleteAll() {
+		setError(null);
+		setPendingAction("unsubscribe");
+		try {
+			const preview = await requestUnsubscribe(messageId, { action: "unsubscribe_and_trash", previewOnly: true });
+			const count = "preview" in preview ? preview.preview.count : 0;
+			if (!await confirmDestructive(t("actions.unsubscribeDeleteConfirm", { count }))) return;
+			const result = await requestUnsubscribe(messageId, { action: "unsubscribe_and_trash" });
+			if (result.method === "link") openUnsubscribeUrl(result.url);
+			showNotice(t("actions.unsubscribeTrashDone", { count: result.trashedCount ?? 0 }));
+			router.refresh();
+		} catch {
+			setError(t("actions.unsubscribeFailed"));
 		} finally {
 			setPendingAction(null);
 		}
@@ -226,244 +292,234 @@ export function MessageActions({
 	const markAction: BulkMessageAction = read ? "unread" : "read";
 	const moveActions = getMoveMessageActions(status, direction);
 
+	// The row keeps a priority order and lets the width decide where the menu
+	// starts: whatever does not fit is rendered in the overflow menu instead.
+	const inlineActions: InlineMessageAction[] = [];
+	const archiveAction = status === "archived"
+		? direction === "inbound"
+			? { action: "inbox" as const, label: t("common.unarchive"), Icon: ArchiveRestore }
+			: null
+		: { action: "archive" as const, label: t("common.archive"), Icon: Archive };
+	if (archiveAction) {
+		inlineActions.push({
+			id: archiveAction.action === "inbox" ? "unarchive" : "archive",
+			label: archiveAction.label,
+			hint: archiveAction.action === "archive" ? t("actions.archiveHint") : undefined,
+			icon: <archiveAction.Icon size={iconSize} />,
+			onSelect: () => void runAction(archiveAction.action),
+			group: "primary",
+		});
+	}
+	if (direction === "inbound") {
+		inlineActions.push(status === "spam"
+			? {
+				id: "notSpam",
+				label: t("common.notSpam"),
+				icon: <ShieldCheck size={iconSize} />,
+				onSelect: () => void runAction("inbox"),
+				group: "primary",
+			}
+			: {
+				id: "spam",
+				label: t("common.reportSpam"),
+				hint: t("actions.reportSpamHint"),
+				icon: <ShieldAlert size={iconSize} />,
+				onSelect: () => void runAction("spam"),
+				group: "primary",
+			});
+	}
+	inlineActions.push({
+		id: canDeleteForever ? "deleteForever" : "trash",
+		label: trashLabel,
+		hint: canDeleteForever ? undefined : t("actions.moveToTrashHint"),
+		icon: <Trash2 size={iconSize} />,
+		onSelect: onTrashClick,
+		group: "primary",
+		destructive: canDeleteForever,
+	});
+	if (notes) {
+		const noteCount = notes.notes.length;
+		inlineActions.push({
+			id: "notes",
+			label: noteCount > 0 ? t("note.count", { count: noteCount }) : t("note.add"),
+			icon: (
+				<span className="relative inline-flex">
+					<Note size={iconSize} />
+					{noteCount > 0 && (
+						<span aria-hidden="true" className="absolute -right-2 -top-2 min-w-4 rounded-full bg-blue-600 px-1 text-center text-[10px] font-semibold leading-4 text-white">
+							{noteCount}
+						</span>
+					)}
+				</span>
+			),
+			onSelect: () => (notes.open ? notes.setOpen(false) : notes.startNote()),
+			group: "secondary",
+		});
+	}
+	inlineActions.push({
+		id: "reply",
+		label: t("message.reply"),
+		hint: t("actions.replyHint"),
+		icon: <Reply size={iconSize} />,
+		onSelect: () => void handleReply("reply"),
+		group: "secondary",
+	});
+	if (canReplyAll) {
+		inlineActions.push({
+			id: "replyAll",
+			label: t("message.replyAll"),
+			icon: <ReplyAll size={iconSize} />,
+			onSelect: () => void handleReply("replyAll"),
+			group: "secondary",
+		});
+	}
+	if (message && messageMeta) {
+		inlineActions.push({
+			id: "forward",
+			label: t("message.forward"),
+			icon: <Forward size={iconSize} />,
+			onSelect: () => void handleForward(),
+			group: "secondary",
+		});
+	}
+
+	const actionGroups = inlineActions.map((action) => action.group).join(",");
+	const actionKey = inlineActions.map((action) => action.id).join(",");
+	const dividerIndex = inlineActions.findIndex((action, index) => index > 0 && action.group !== inlineActions[index - 1].group);
+	const overflowActions = inlineActions.slice(visibleCount);
+
+	useLayoutEffect(() => {
+		const element = actionsRef.current;
+		if (!element) return;
+		const row = element;
+		const groups = actionGroups ? actionGroups.split(",") : [];
+		function update() {
+			const next = getVisibleActionCount({ availableWidth: row.clientWidth, groups });
+			setVisibleCount((current) => (current === next ? current : next));
+		}
+		update();
+		if (typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(update);
+		observer.observe(element);
+		return () => observer.disconnect();
+	}, [actionKey, actionGroups]);
+
 	return (
-		<div className="flex flex-wrap items-center gap-3 text-neutral-600 flex-1 min-w-0">
-			{error && <span className="text-xs text-red-600">{error}</span>}
+		<div className="ml-4 flex min-w-0 flex-1 items-center gap-2 text-neutral-600">
+			{error && <span role="alert" className="text-xs text-red-600">{error}</span>}
 
-			{isMobile && (
-				<>
-					<Button
-						type="button"
-						variant="ghost"
-						size="roundedSM"
-						aria-label="Reply"
-						disabled={disabled}
-						onClick={() => handleReply("reply")}
-					>
-						<Reply size={iconSize} />
-					</Button>
-					<Button
-						variant="ghost"
-						size="roundedSM"
-						aria-label="Move to trash"
-						disabled={disabled || status === "trash"}
-						onClick={() => runAction("trash")}
-					>
-						<Trash2 size={iconSize} />
-					</Button>
-					<Button
-						variant="ghost"
-						size="roundedSM"
-						aria-label="Report spam"
-						disabled={disabled || status === "spam" || direction !== "inbound"}
-						onClick={() => runAction("spam")}
-					>
-						<ShieldAlert size={iconSize} />
-					</Button>
-				</>
-			)}
-			{!isMobile && (
-				<>
-			<Tooltip label={shortcutsEnabled ? "Archive (e)" : "Archive"}>
-				<Button
-					variant="ghost"
-					size="roundedSM"
-					aria-label={shortcutsEnabled ? "Archive (e)" : "Archive"}
-					disabled={disabled || status === "archived"}
-					onClick={() => runAction("archive")}
-				>
-					<Archive size={iconSize} />
-				</Button>
-			</Tooltip>
-			<Tooltip label={shortcutsEnabled ? "Report spam (!)" : "Report spam"}>
-				<Button
-					variant="ghost"
-					size="roundedSM"
-					aria-label={shortcutsEnabled ? "Report spam (!)" : "Report spam"}
-					disabled={disabled || status === "spam" || direction !== "inbound"}
-					onClick={() => runAction("spam")}
-				>
-					<ShieldAlert size={iconSize} />
-				</Button>
-			</Tooltip>
-			<Tooltip label={shortcutsEnabled ? "Delete (#)" : "Delete"}>
-				<Button
-					variant="ghost"
-					size="roundedSM"
-					aria-label={shortcutsEnabled ? "Move to trash (#)" : "Move to trash"}
-					disabled={disabled || status === "trash"}
-					onClick={() => runAction("trash")}
-				>
-					<Trash2 size={iconSize} />
-				</Button>
-			</Tooltip>
-			<span className="h-5 mx-2 bg-gray-200 w-px inline-block" />
-
-
-			<Tooltip label={shortcutsEnabled ? "Reply (r)" : "Reply"}>
-				<Button
-					type="button"
-					variant="ghost"
-					size="roundedSM"
-					aria-label={shortcutsEnabled ? "Reply (r)" : "Reply"}
-					disabled={disabled}
-					onClick={() => handleReply("reply")}
-				>
-					<Reply size={iconSize} />
-				</Button>
-			</Tooltip>
-			{canReplyAll && (
-				<Tooltip label="Reply all">
-					<Button
-						type="button"
-						variant="ghost"
-						size="roundedSM"
-						aria-label="Reply all"
-						disabled={disabled}
-						onClick={() => handleReply("replyAll")}
-					>
-						<ReplyAll size={iconSize} />
-					</Button>
-				</Tooltip>
-			)}
-			{message && messageMeta && (
-				<Tooltip label="Forward">
-					<Button
-						type="button"
-						variant="ghost"
-						size="roundedSM"
-						aria-label="Forward"
-						disabled={disabled}
-						onClick={() => void handleForward()}
-					>
-						<Forward size={iconSize} />
-					</Button>
-				</Tooltip>
-			)}
-
-			<Tooltip label={read ? "Mark as unread" : "Mark as read"}>
-				<Button
-					variant="ghost"
-					size="roundedSM"
-					aria-label={read ? "Mark as unread" : "Mark as read"}
-					disabled={disabled}
-					onClick={() => runAction(markAction)}
-				>
-					{read ? <Mail size={iconSize} /> : <MailOpen size={iconSize} />}
-				</Button>
-			</Tooltip>
-				</>
-			)}
-			<div className="relative">
-				<Tooltip label="More actions">
-					<Button
-						type="button"
-						variant="ghost"
-						size="roundedSM"
-						aria-label="More actions"
-						aria-expanded={moreOpen}
-						disabled={disabled}
-						onClick={() => setMoreOpen((open) => !open)}
-					>
-						<MoreVertical size={iconSize} />
-					</Button>
-				</Tooltip>
-
-
-				{moreOpen && (
-					<div className="absolute right-0 top-8 z-20 w-54 rounded-xl border border-neutral-200 bg-white p-2 shadow-lg">
-						{isMobile && (
-							<>
-								<button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 disabled:text-neutral-400" disabled={status === "archived"} onClick={() => void runAction("archive")}>
-									<Archive className="h-4 w-4" />
-									Archive
-								</button>
-								{canReplyAll && (
-									<button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 disabled:text-neutral-400" onClick={() => { setMoreOpen(false); void handleReply("replyAll"); }}>
-										<ReplyAll className="h-4 w-4" />
-										Reply all
-									</button>
-								)}
-								{message && messageMeta && (
-									<button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 disabled:text-neutral-400" onClick={() => { setMoreOpen(false); void handleForward(); }}>
-										<Forward className="h-4 w-4" />
-										Forward
-									</button>
-								)}
-								<button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 disabled:text-neutral-400" onClick={() => void runAction(markAction)}>
-									{read ? <Mail className="h-4 w-4" /> : <MailOpen className="h-4 w-4" />}
-									{read ? "Mark as unread" : "Mark as read"}
-								</button>
-								<hr className="my-1 border-neutral-100" />
-							</>
-						)}
-						{direction === "inbound" && status === "received" && (
-							<button
-								type="button"
-								className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100"
-								onClick={() => { setMoreOpen(false); setSnoozeOpen(true); }}
-							>
-								<Clock className="h-4 w-4" />
-								Snooze
-							</button>
-						)}
-						{direction === "inbound" && (
-							<>
-								<button
+			<div ref={actionsRef} className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+				{inlineActions.slice(0, visibleCount).map((action, index) => {
+					const tooltip = action.hint && shortcutsEnabled ? action.hint : action.label;
+					return (
+						<Fragment key={action.id}>
+							{index === dividerIndex && (
+								<span className="mx-2 h-5 w-px shrink-0 bg-gray-200/60" aria-hidden="true" />
+							)}
+							<Tooltip label={tooltip}>
+								<Button
 									type="button"
-									className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:text-neutral-400"
-									disabled={!unsubscribeUrl && status === "trash"}
-									onClick={() => void onUnsubscribe()}
+									variant="ghost"
+									size="roundedSM"
+									className={cn("h-8 w-8 shrink-0 p-0", action.destructive && "text-red-600 hover:text-red-700")}
+									aria-label={action.label}
+									disabled={disabled}
+									onClick={action.onSelect}
 								>
-									<BellOff className="h-4 w-4 shrink-0" />
-									Unsubscribe
-								</button>
-								<button
-									type="button"
-									className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100"
-									onClick={() => void onBlockContact()}
-								>
-									<Ban className="h-4 w-4" />
-									Block contact
-								</button>
-								<hr className="my-1 border-neutral-100" />
-							</>
-						)}
-						<button
+									{action.icon}
+								</Button>
+							</Tooltip>
+						</Fragment>
+					);
+				})}
+
+				<MessageActionMenu
+					label={t("common.moreActions")}
+					trigger={
+						<Button
 							type="button"
-							className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100"
-							onClick={() => { setMoreOpen(false); setSourceOpen(true); }}
+							variant="ghost"
+							size="roundedSM"
+							className="h-8 w-8 shrink-0 p-0"
+							aria-label={t("common.moreActions")}
+							disabled={disabled}
 						>
-							<FileCode2 className="h-4 w-4" />
-							Show original
-						</button>
-						<hr className="my-1 border-neutral-100" />
-						<p className="mt-1 px-3 pb-1 pt-2 text-sm font-medium text-neutral-500">
-							Move to
-						</p>
-						{moveActions.map((item) => (
-							<button
-								key={item.action}
-								type="button"
-								className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100"
-								onClick={() => void runAction(item.action)}
+							<MoreVertical size={iconSize} />
+						</Button>
+					}
+				>
+					{overflowActions.map((action) => (
+						<MessageActionMenuItem
+							key={action.id}
+							icon={action.icon}
+							destructive={action.destructive}
+							onSelect={action.onSelect}
+						>
+							{action.label}
+						</MessageActionMenuItem>
+					))}
+					{overflowActions.length > 0 && <MessageActionMenuSeparator />}
+					{direction === "inbound" && status === "received" && (
+						<MessageActionMenuItem icon={<Clock size={iconSize} />} onSelect={() => setSnoozeOpen(true)}>
+							{t("common.snooze")}
+						</MessageActionMenuItem>
+					)}
+					{direction === "inbound" && (
+						<>
+							<MessageActionMenuItem
+								icon={<BellOff size={iconSize} />}
+								disabled={!unsubscribeUrl && status === "trash"}
+								onSelect={() => void onUnsubscribe()}
 							>
-								{createElement(item.icon, { size: 16 })}
-								{item.label}
-							</button>
-						))}
-					</div>
-				)}
-
+								{t("actions.unsubscribe")}
+							</MessageActionMenuItem>
+							{unsubscribeUrl && (
+								<MessageActionMenuItem
+									icon={<Ban size={iconSize} />}
+									disabled={status === "trash" || status === "spam"}
+									onSelect={() => void onUnsubscribeDeleteAll()}
+								>
+									{t("actions.unsubscribeDeleteAll")}
+								</MessageActionMenuItem>
+							)}
+							<MessageActionMenuItem icon={<Ban size={iconSize} />} onSelect={() => void onBlockContact()}>
+								{t("message.blockContact")}
+							</MessageActionMenuItem>
+							<MessageActionMenuSeparator />
+						</>
+					)}
+					<MessageActionMenuItem icon={<FileCode2 size={iconSize} />} onSelect={() => setSourceOpen(true)}>
+						{t("message.showOriginal")}
+					</MessageActionMenuItem>
+					<MessageActionMenuSeparator />
+					<MessageActionMenuLabel>{t("common.moveTo")}</MessageActionMenuLabel>
+					{moveActions.map((item) => (
+						<MessageActionMenuItem
+							key={item.action}
+							icon={createElement(item.icon, { size: iconSize })}
+							onSelect={() => void runAction(item.action)}
+						>
+							{t(item.labelKey)}
+						</MessageActionMenuItem>
+					))}
+				</MessageActionMenu>
 			</div>
 
 			<MessageSourceDialog messageId={messageId} open={sourceOpen} onOpenChange={setSourceOpen} />
 			<MessageSnoozeDialog messageId={messageId} open={snoozeOpen} onOpenChange={setSnoozeOpen} />
-
-			<span className="flex-1" />
 		</div>
 	);
 }
 
+type InlineMessageAction = {
+	id: string;
+	label: string;
+	/** Tooltip variant that names the keyboard shortcut, when shortcuts are on. */
+	hint?: string;
+	icon: ReactNode;
+	onSelect: () => void;
+	group: "primary" | "secondary";
+	destructive?: boolean;
+};
 
 const iconSize = 16;

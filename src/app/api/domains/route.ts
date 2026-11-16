@@ -4,6 +4,7 @@ import { requireUser } from "@/lib/auth/cookies";
 import { canManageDomains } from "@/lib/auth/admin";
 import { addDomainSchema } from "@/lib/validators";
 import { addDomainForUser, listUserDomains } from "@/lib/domains/service";
+import { domainListOwnerIds } from "@/lib/domains/utils";
 import type { DnsStatusSummary } from "@/lib/dns-status";
 import { summariseDomainDns } from "@/lib/domains/dns-view";
 import { getDomainProvisioningError } from "@/lib/domains/errors";
@@ -12,8 +13,7 @@ import { hasValidSessionMutationOrigin } from "@/lib/auth/origin";
 export async function GET(request: NextRequest) {
 	const env = getEnv();
 	const user = await requireUser(env, request);
-	const domainOwnerId = user.canManageMailboxes && user.createdByUserId ? user.createdByUserId : user.id;
-	const domains = await listUserDomains(env, domainOwnerId);
+	const domains = await listUserDomains(env, domainListOwnerIds(user));
 
 	const includeDns = request.nextUrl.searchParams.get("includeDns") === "true";
 
@@ -57,6 +57,7 @@ export async function POST(request: Request) {
 			enableRouting: parsed.data.enableRouting,
 			enableSending: parsed.data.enableSending,
 			replaceMxRecords: parsed.data.replaceMxRecords,
+			skipDns: parsed.data.skipDns,
 			receivingProvider: parsed.data.receivingProvider,
 			sendingProvider: parsed.data.sendingProvider,
 		});

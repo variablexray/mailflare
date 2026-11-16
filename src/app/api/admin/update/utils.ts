@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { assertPrimaryAdmin } from "@/lib/auth/admin";
 import { requireUser } from "@/lib/auth/cookies";
 import { getEnv } from "@/lib/cloudflare";
+import { isNodeRuntime } from "@/lib/runtime";
 import type {
   GitHubContentResponse,
   GitHubRepositoryResponse,
@@ -91,12 +92,10 @@ async function githubRequest<T>(
     },
   });
 
-  console.log(`[gg]`, `${GITHUB_API_URL}${path}`);
-
   if (response.statusText === "Forbidden") {
     return {
       response,
-      data: { error: response.statusText } as any,
+      data: { error: response.statusText } as T,
     };
   }
 
@@ -182,6 +181,11 @@ export async function getUpdateStatus(
   env: CloudflareEnv,
 ): Promise<UpdateStatus> {
   const currentVersion = packageMetadata.version;
+
+  if (isNodeRuntime(env)) {
+    return { configuration: [], configured: false, currentVersion };
+  }
+
   const configuration = getUpdateConfiguration(env);
   const configured = configuration.every((item) => item.configured);
 

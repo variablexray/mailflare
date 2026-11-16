@@ -22,11 +22,11 @@ export async function getSetupStatus(): Promise<SetupStatus> {
 	return data;
 }
 
-export async function submitPrimaryDomain(hostname: string): Promise<{ ok: boolean; data: DomainSetupResult }> {
+export async function submitPrimaryDomain(hostname: string, skipDns = false): Promise<{ ok: boolean; data: DomainSetupResult }> {
 	const res = await fetch("/api/setup/domain", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ hostname }),
+		body: JSON.stringify(skipDns ? { hostname, skipDns: true } : { hostname }),
 	});
 
 	return {
@@ -50,7 +50,7 @@ export async function checkExistingMx(hostname: string): Promise<{ ok: boolean; 
 
 export async function submitRegistration(
 	form: FormData,
-	payload: { firstRun: boolean; domain: string; enableSending?: boolean; replaceMxRecords?: boolean },
+	payload: { firstRun: boolean; domain: string; enableSending?: boolean; replaceMxRecords?: boolean; skipDns?: boolean },
 ): Promise<{ ok: boolean; data: RegisterResult }> {
 	const res = await fetch("/api/auth/register", {
 		method: "POST",
@@ -61,14 +61,17 @@ export async function submitRegistration(
 						domain: payload.domain,
 						enableSending: payload.enableSending,
 						replaceMxRecords: payload.replaceMxRecords,
+						skipDns: payload.skipDns,
 						username: form.get("username"),
-						password: form.get("password"),
+						password: form.get("usePasskey") === "on" ? undefined : form.get("password"),
+						usePasskey: form.get("usePasskey") === "on",
 						resetEmail: form.get("resetEmail"),
 						turnstileToken: form.get("turnstileToken"),
 					}
 				: {
 						username: form.get("username"),
-						password: form.get("password"),
+						password: form.get("usePasskey") === "on" ? undefined : form.get("password"),
+						usePasskey: form.get("usePasskey") === "on",
 						resetEmail: form.get("resetEmail"),
 						turnstileToken: form.get("turnstileToken"),
 					},

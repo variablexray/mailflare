@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useLayoutEffect, useState } from "react";
 import { usePathname } from "next/navigation";
+import { fetchCurrentUser } from "@/hooks/use-current-user";
 import { readColumnWidth, readInitialColumnWidth, saveColumnWidth } from "./column-width-preferences";
 import { isMobileViewport, useIsMobile } from "./sidebar-mobile-utils";
 import { readInitialSidebarMinimal, saveInitialSidebarMinimal, syncInitialSidebarWidth } from "./sidebar-state-utils";
@@ -21,22 +22,19 @@ export function SidebarProvider({ children, expandedWidth = 260, mobileOverlay =
 	const [mobileOpen, setMobileOpen] = useState(false);
 	// Overlay layouts have no minified rail on phones: the menu is either fully shown over the page or hidden.
 	const overlay = mobileOverlay && mobile;
-
-	useEffect(() => {
-		setMobileOpen(false);
-	}, [pathname, mobile]);
+	const [syncedRoute, setSyncedRoute] = useState({ pathname, mobile });
 
 	// Collapse on first load and after every navigation on phones, so the overlay never sticks open.
-	useEffect(() => {
+	if (syncedRoute.pathname !== pathname || syncedRoute.mobile !== mobile) {
+		setSyncedRoute({ pathname, mobile });
+		setMobileOpen(false);
 		if (mobile) setMinimal(true);
-	}, [pathname, mobile]);
-
-	useEffect(() => {
-		if (!mobile) setMinimal(readInitialSidebarMinimal());
-	}, [mobile]);
+		else if (syncedRoute.mobile) setMinimal(readInitialSidebarMinimal());
+	}
 
 	useLayoutEffect(() => {
-		setMinimal(readInitialSidebarMinimal());
+		// eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage is only readable after hydration, and the saved layout must apply before first paint
+		setMinimal(isMobileViewport() || readInitialSidebarMinimal());
 		setWidth(readInitialColumnWidth("sidebar", expandedWidth, 200, 480));
 		const frame = requestAnimationFrame(() => setWidthReady(true));
 		return () => cancelAnimationFrame(frame);
@@ -48,15 +46,9 @@ export function SidebarProvider({ children, expandedWidth = 260, mobileOverlay =
 
 	useEffect(() => {
 		// The sidebar preference is cosmetic, so every failure here degrades to the default.
-		// Guard the parse: an error response may carry an empty or non-JSON body, and an
-		// unhandled rejection here surfaces as a confusing SyntaxError overlay in dev.
-		void fetch("/api/auth/me", { cache: "no-store" })
-			.then(async (response) => {
-				if (!response.ok) return null;
-				return (await response.json().catch(() => null)) as { user?: { id?: string } } | null;
-			})
-			.then((data) => {
-				const userId = data?.user?.id;
+		void fetchCurrentUser()
+			.then((user) => {
+				const userId = user?.id;
 					if (!userId) return;
 					setUserId(userId);
 					const key = `mailflare-sidebar-minimal:${userId}`;

@@ -1,7 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { heroMessages, sidebarItems } from "./utils";
-import { Inbox, Mail, Search, ShieldCheck } from "lucide-react";
+import { Inbox, Mail, Search, ShieldCheck } from "@/components/icons";
+import { getServerTranslator } from "@/lib/i18n/server";
+import { getCurrentUser } from "@/lib/auth/cookies";
+import { getEnv } from "@/lib/cloudflare";
+import { LanguageSelector } from "@/components/language-selector";
 import { getHomeBranding } from "./home-server-utils";
 import { HomeAuthProvider } from "./home-auth";
 import { HomeHeaderActions } from "./home-header-actions";
@@ -18,19 +23,40 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function HomePage() {
-  const branding = await getHomeBranding();
+  const [branding, t, sessionUser] = await Promise.all([
+    getHomeBranding(),
+    getServerTranslator(),
+    // A session lookup failure must not take down the public landing page.
+    getCurrentUser(getEnv()).catch(() => null),
+  ]);
+  // Signed-in users skip the landing page; the inbox restores their last-used mailbox.
+  if (sessionUser && !sessionUser.disabled) redirect("/inbox");
+
+  // Render the signed-in account from the server response so the header does not
+  // wait for hydration and an /api/auth/me round trip before showing it.
+  const initialUser = sessionUser
+    ? {
+        id: sessionUser.id,
+        email: sessionUser.email,
+        name: sessionUser.name,
+        role: sessionUser.role,
+        hasAvatar: !!sessionUser.avatarKey,
+        calendarEnabled: sessionUser.calendarEnabled,
+        driveEnabled: sessionUser.driveEnabled,
+      }
+    : null;
 
   return (
-    <HomeAuthProvider>
+    <HomeAuthProvider initialUser={initialUser}>
     <div className="min-h-dvh bg-[#f6f8fc] text-neutral-900">
       <header className="mx-auto flex h-16 w-full max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
         <Link
           href="/"
           className="flex items-center gap-3"
-          aria-label={`${branding.appName} home`}
+          aria-label={t("home.homeLabel", { app: branding.appName })}
         >
           <img src={branding.hasCustomIcon ? "/api/branding/icon" : "/icon-96.png"} height={32} width={32} alt="" />
-          <span className="text-base font-semibold tracking-tight">
+          <span className="hidden text-base font-semibold tracking-tight sm:inline">
             {branding.appName}
           </span>
         </Link>
@@ -44,6 +70,9 @@ export default async function HomePage() {
 				</nav> */}
 
         <div className="flex items-center gap-2">
+          <div className="hidden sm:block">
+            <LanguageSelector variant="text" />
+          </div>
           <HomeHeaderActions />
         </div>
       </header>
@@ -53,14 +82,13 @@ export default async function HomePage() {
           <div className="flex max-w-2xl flex-col justify-center">
             <div className="mb-6 flex w-fit items-center gap-2 text-sm font-medium text-blue-800">
               <ShieldCheck className="h-4 w-4" />
-              Cloudflare-native email operations
+              {t("home.badge")}
             </div>
             <h1 className="max-w-[12ch] text-5xl font-semibold leading-[0.96] tracking-tight text-neutral-950 sm:text-6xl lg:text-7xl">
-              Mailboxes that feel like your inbox.
+              {t("home.headline")}
             </h1>
             <p className="mt-6 max-w-xl text-lg leading-8 text-neutral-600">
-              Add domains, route inbound mail, send through API keys, and manage
-              your mailboxes from one quiet workspace built around the message list.
+              {t("home.subheadline")}
             </p>
             <HomeHeroActions />
           </div>
@@ -70,17 +98,17 @@ export default async function HomePage() {
               <aside className="hidden flex-col gap-2 bg-[#f6f8fc] px-3 py-5 sm:flex">
                 <div className="mb-4 flex items-center gap-3 px-3 text-neutral-700">
                   <Inbox className="h-5 w-5" />
-                  <span className="font-semibold">Mail</span>
+                  <span className="font-semibold">{t("home.mockMail")}</span>
                 </div>
                 <div className="mb-3 flex h-12 w-fit items-center gap-2 rounded-2xl bg-blue-100 px-5 text-sm font-semibold text-blue-950 shadow-sm">
                   <Mail className="h-4 w-4" />
-                  Compose
+                  {t("navigation.compose")}
                 </div>
                 {sidebarItems.map((item) => {
                   const Icon = item.icon;
                   return (
                     <div
-                      key={item.label}
+                      key={item.labelKey}
                       className={`flex h-9 items-center justify-between rounded-r-full px-3 text-sm font-medium ${
                         item.active
                           ? "bg-blue-100 text-blue-950"
@@ -89,7 +117,7 @@ export default async function HomePage() {
                     >
                       <span className="flex items-center gap-3">
                         <Icon className="h-4 w-4" />
-                        {item.label}
+                        {t(item.labelKey)}
                       </span>
                       {item.count && (
                         <span className="text-xs text-blue-800">
@@ -105,7 +133,7 @@ export default async function HomePage() {
                 <div className="flex h-16 items-center gap-3 bg-[#f6f8fc] px-4">
                   <div className="flex h-12 flex-1 items-center gap-3 rounded-full bg-[#eaf1fb] px-4 text-neutral-600">
                     <Search className="h-5 w-5" />
-                    <span className="text-[15px]">Search mail</span>
+                    <span className="text-[15px]">{t("search.mail")}</span>
                   </div>
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-600 text-white">
                     <Mail className="h-4 w-4" />
@@ -116,14 +144,14 @@ export default async function HomePage() {
                   <div className="flex h-14 items-center justify-between border-b border-neutral-200 px-6">
                     <div className="flex items-center gap-3">
                       <h2 className="text-xl font-medium text-neutral-800">
-                        Priority inbox
+                        {t("home.mockPriority")}
                       </h2>
                       <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-xs font-medium text-neutral-600">
                         18
                       </span>
                     </div>
                     <span className="hidden text-sm font-medium text-neutral-500 md:inline">
-                      Updated 2 min ago
+                      {t("home.mockUpdated")}
                     </span>
                   </div>
                   <div className="divide-y divide-neutral-100">
@@ -138,15 +166,15 @@ export default async function HomePage() {
                         </span>
                         <span className="truncate text-neutral-600">
                           <span className="font-medium text-neutral-900">
-                            {message.subject}
+                            {t(message.subjectKey)}
                           </span>
                           <span className="hidden text-neutral-500 md:inline">
                             {" "}
-                            - {message.preview}
+                            - {t(message.previewKey)}
                           </span>
                         </span>
                         <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
-                          {message.badge}
+                          {t(message.badgeKey)}
                         </span>
                       </div>
                     ))}

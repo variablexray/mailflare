@@ -14,9 +14,13 @@ export type SessionUser = {
 	canManageMailboxes: boolean;
 	canManageDomains: boolean;
 	canManageUsers: boolean;
+	calendarEnabled: boolean;
+	driveEnabled: boolean;
 	keyboardShortcutsEnabled: boolean;
 	spamProtectionEnabled: boolean;
+	trashRetentionDays: number | null;
 	showFullRecipientAddresses: boolean;
+	remoteContentMode: "ask" | "new_sender" | "allow";
 	createdByUserId: string | null;
 	createdAt: Date;
 };

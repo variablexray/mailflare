@@ -1,7 +1,9 @@
 "use client";
 
+import { SkipToContent } from "@/components/skip-to-content";
 import { useEffect } from "react";
-import {  Sparkles } from "lucide-react";
+import {  Sparkles } from "@/components/icons";
+import { useLanguage } from "@/components/language-provider";
 import { AuthGuard } from "@/components/auth/auth-guard";
 import { ComposeProvider } from "@/components/compose/compose-context";
 import { FloatingComposer } from "@/components/compose/floating-composer";
@@ -12,6 +14,7 @@ import { MailboxSelector } from "@/components/mailbox-selector";
 import { AgentPanel } from "@/components/agent/agent-panel";
 import { AssistantOpenContext } from "@/components/agent/assistant-open-state";
 import { Button } from "@/components/ui/button";
+import { DnsSkippedBanner } from "@/components/dns-skipped-banner";
 import { LicenseIndicator } from "@/components/license-indicator";
 import { DashboardNav } from "@/components/dashboard-nav";
 import { SidebarProvider } from "@/components/sidebar-state";
@@ -19,17 +22,25 @@ import { SidebarAside, MobileMenuButton } from "@/components/sidebar-aside";
 import { SidebarResizeBoundary } from "@/components/sidebar-resize-boundary";
 import { ShortcutsProvider } from "@/components/shortcuts";
 import clsx from "clsx";
+import { usePathname } from "next/navigation";
 import { useDashboardState } from "./dashboard-state";
 import { useAssistantAvailability } from "./use-assistant-availability";
+import { RouteTitle } from "@/components/route-title";
+import { useAppBadge } from "@/hooks/use-app-badge";
 
 export default function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const { t } = useLanguage();
+  const pathname = usePathname();
+  // Contacts is a list page like Mailboxes: gray page, white rows, no white panel.
+  const listPage = pathname === "/contacts" || pathname.startsWith("/contacts/");
   const { assistantOpen, setAssistantOpen, assistantFullSize, setAssistantFullSize } = useDashboardState();
   const assistantEnabled = useAssistantAvailability();
   const assistantVisible = assistantEnabled === true && assistantOpen;
+  useAppBadge();
 
   useEffect(() => {
     if (assistantEnabled === false && (assistantOpen || assistantFullSize)) {
@@ -45,7 +56,9 @@ export default function DashboardLayout({
           <ComposeProvider>
             <MailSearchProvider>
               <ShortcutsProvider>
+                <RouteTitle />
                 <div className="grid h-dvh grid-cols-[minmax(0,1fr)] overflow-hidden bg-[#f6f8fc] transition-[grid-template-columns] md:grid-cols-[var(--sidebar-width)_minmax(0,1fr)]" style={{ transitionDuration: "var(--sidebar-transition-duration)" }}>
+                  <SkipToContent />
                   <SidebarAside>
                     <div className="h-full">
                       <DashboardNav />
@@ -55,7 +68,7 @@ export default function DashboardLayout({
                   <div className="flex min-h-0 min-w-0 flex-col">
                     <header className="flex h-16 w-full shrink-0 items-center gap-3 pr-4 text-sm">
                       <MobileMenuButton className="ml-2" />
-                      <MailSearchInput />
+                      <MailSearchInput mobileEnd />
                       {/* <Link
                         href="/settings/account"
                         className="flex h-10 w-10 items-center justify-center rounded-full text-neutral-600 hover:bg-neutral-200"
@@ -64,12 +77,13 @@ export default function DashboardLayout({
                         <HelpCircle className="h-5 w-5" />
                       </Link> */}
                       <LicenseIndicator />
-                      {assistantEnabled && <Button type="button" variant="ghost" size="sm" className={assistantOpen ? "bg-blue-50 text-blue-700" : "text-neutral-600"} onClick={() => { setAssistantOpen((current) => !current); setAssistantFullSize(false); }} aria-label={assistantOpen ? "Close email assistant" : "Open email assistant"} aria-expanded={assistantOpen} aria-controls="email-assistant-panel"><Sparkles className="h-5 w-5" /></Button>}
+                      {assistantEnabled && <Button type="button" variant="ghost" size="sm" className={assistantOpen ? "bg-blue-50 text-blue-700" : "text-neutral-600"} onClick={() => { setAssistantOpen((current) => !current); setAssistantFullSize(false); }} aria-label={assistantOpen ? t("agent.assistant.close") : t("agent.assistant.open")} aria-expanded={assistantOpen} aria-controls="email-assistant-panel"><Sparkles className="h-5 w-5" /></Button>}
                       <MailboxSelector />
                     </header>
+                    <DnsSkippedBanner />
                     <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
                       <AssistantOpenContext.Provider value={assistantVisible}>
-                        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto rounded-t-3xl bg-white overscroll-contain scrollbar-gutter-stable" aria-hidden={assistantVisible && assistantFullSize} inert={assistantVisible && assistantFullSize}>
+                        <main id="main-content" tabIndex={-1} className={clsx("focus:outline-none page-flush min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain scrollbar-gutter-stable", listPage ? "rounded-tl-3xl max-md:rounded-t-3xl max-md:bg-white max-md:pb-24" : "rounded-t-3xl bg-white")} aria-hidden={assistantVisible && assistantFullSize} inert={assistantVisible && assistantFullSize}>
                           {children}
                         </main>
                       </AssistantOpenContext.Provider>
@@ -78,7 +92,7 @@ export default function DashboardLayout({
                       </aside>
                     </div>
                   </div>
-                  <FloatingComposer />
+                  <FloatingComposer showButton />
                 </div>
               </ShortcutsProvider>
             </MailSearchProvider>

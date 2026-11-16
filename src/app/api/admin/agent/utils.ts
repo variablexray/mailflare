@@ -12,7 +12,7 @@ import { hasValidSessionMutationOrigin } from "@/lib/auth/origin";
 
 const providerSchema = z.object({
 	provider: z.enum(["cloudflare", "compatible"]),
-	preset: z.enum(["openai", "openrouter", "groq", "custom"]),
+	preset: z.enum(["openai", "anthropic", "openrouter", "groq", "custom"]),
 	baseUrl: z.string().max(500),
 	apiKey: z.string().max(2_000).optional(),
 	model: z.string().trim().min(1).max(5_000),
@@ -40,7 +40,7 @@ export async function PUT(request: Request) {
 	if (!hasValidSessionMutationOrigin(request)) return Response.json({ error: "Invalid origin" }, { status: 403 });
 	const body = await request.json().catch(() => null);
 	const enabled = enabledSchema.safeParse(body);
-	if (enabled.success && Object.keys(body).length === 1) {
+	if (enabled.success && Object.keys(body as object).length === 1) {
 		const db = getDb(access.env);
 		await db.insert(appSettings).values({ id: AGENT_SETTINGS_ID, agentEnabled: enabled.data.enabled }).onConflictDoUpdate({ target: appSettings.id, set: { agentEnabled: enabled.data.enabled, updatedAt: new Date() } });
 		if (!enabled.data.enabled) {
